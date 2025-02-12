@@ -4,7 +4,7 @@
         {
             "label": "Sync cn04",
             "type": "shell",
-            "command": "rsync -avz --progress --exclude='.git/' /Users/yuxingxu/OneDrive/code/python_project/yxdef cn04_acc2:/lustre/home/xuyuxing/python_project",
+            "command": "rsync -avz --progress --exclude='.git/' /Users/yuxingxu/OneDrive/code/python_project/local_reassembly cn04_acc2:/lustre/home/xuyuxing/python_project",
             "group": {
                 "kind": "build",
                 "isDefault": true
