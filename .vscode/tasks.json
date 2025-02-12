@@ -1,0 +1,17 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Sync cn04",
+            "type": "shell",
+            "command": "rsync -avz --progress --exclude='.git/' /Users/yuxingxu/OneDrive/code/python_project/yxdef cn04_acc2:/lustre/home/xuyuxing/python_project",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always"
+            }
+        }        
+    ]
+}
