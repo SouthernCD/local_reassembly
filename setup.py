@@ -17,7 +17,7 @@ setuptools.setup(
     include_package_data = True,
 
     entry_points={
-        "console_scripts": ["reassm = local_reassembly.cli:main"]
+        "console_scripts": ["reloc = local_reassembly.cli:main"]
     },    
 
     packages=setuptools.find_packages(),
