@@ -3,6 +3,188 @@ import os
 import shutil
 import re
 import json
+from BCBio import GFF
+from collections import OrderedDict
+from Bio.Seq import translate
+
+
+def cds_judgment(cds_sequence, parse_phase=True, keep_stop=False, return_cds=False):
+    """make sure a cds seq is good for translate"""
+
+    if parse_phase:
+        phase = 0
+        orf_dict = {}
+
+        for i in range(3):
+            cds_now = cds_sequence[i:]
+            aa_seq = translate(cds_now, to_stop=False)
+            if '*' in aa_seq:
+                star_index = aa_seq.index('*')
+                one_star_aa_seq = aa_seq[:star_index+1]
+            else:
+                one_star_aa_seq = aa_seq
+            phase = i
+            orf_dict[phase] = (phase, one_star_aa_seq,
+                               cds_now[:len(one_star_aa_seq)*3])
+
+        best_phase = sorted(orf_dict, key=lambda x: len(
+            orf_dict[x][1]), reverse=True)[0]
+
+        phase, one_star_aa_seq, cds_now = orf_dict[best_phase]
+
+        if len(one_star_aa_seq) * 3 / len(cds_sequence) > 0.95:
+            good_orf = True
+        else:
+            good_orf = False
+
+        if not keep_stop and '*' in one_star_aa_seq:
+            out_aa_seq = one_star_aa_seq[:-1]
+            out_cds_now = cds_now[:-3]
+        else:
+            out_aa_seq = one_star_aa_seq
+            out_cds_now = cds_now
+
+        if good_orf and len(out_aa_seq) * 3 != len(out_cds_now):
+            raise ValueError("cds length error")
+
+        if return_cds:
+            return good_orf, phase, out_aa_seq, out_cds_now
+        else:
+            return good_orf, phase, out_aa_seq
+    else:
+        aa_seq = translate(cds_sequence, to_stop=False)
+
+        if '*' in aa_seq:
+            star_index = aa_seq.index('*')
+            one_star_aa_seq = aa_seq[:star_index+1]
+        else:
+            one_star_aa_seq = aa_seq
+
+        good_orf = True if len(cds_sequence) % 3 == 0 and len(
+            one_star_aa_seq) == len(cds_sequence) / 3 else False
+
+        if not keep_stop and '*' in one_star_aa_seq:
+            out_aa_seq = one_star_aa_seq[:-1]
+            out_cds_now = cds_sequence[:-3]
+        else:
+            out_aa_seq = one_star_aa_seq
+            out_cds_now = cds_sequence
+
+        if good_orf and len(out_aa_seq) * 3 != len(out_cds_now):
+            raise ValueError("cds length error")
+
+        if return_cds:
+            return good_orf, None, out_aa_seq, out_cds_now
+        else:
+            return good_orf, None, out_aa_seq
+
+
+class ChrLoci(object):
+    def __init__(self, chr_id=None, strand=None, start=None, end=None, sp_id=None):
+        self.chr_id = chr_id
+        self.sp_id = sp_id
+
+        if strand is None:
+            self.strand = strand
+        elif strand == "+" or str(strand) == '1':
+            self.strand = "+"
+        elif strand == "-" or str(strand) == '-1':
+            self.strand = "-"
+        else:
+            self.strand = None
+
+        if end is not None and start is not None:
+            self.start = min(int(start), int(end))
+            self.end = max(int(start), int(end))
+            self._range = (self.start, self.end)
+            self.length = abs(self.end - self.start) + 1
+
+
+class GenomeFeature(ChrLoci):
+    def __init__(self, id=None, type=None, chr_loci=None, qualifiers={}, sub_features=None, chr_id=None, strand=None, start=None, end=None, sp_id=None):
+        if chr_loci:
+            super(GenomeFeature, self).__init__(chr_id=chr_loci.chr_id, strand=chr_loci.strand, start=chr_loci.start,
+                                                end=chr_loci.end, sp_id=chr_loci.sp_id)
+        else:
+            super(GenomeFeature, self).__init__(
+                chr_id=chr_id, strand=strand, start=start, end=end, sp_id=sp_id)
+
+        self.id = id
+        self.type = type
+        if chr_loci:
+            self.chr_loci = chr_loci
+        else:
+            self.chr_loci = ChrLoci(chr_id=chr_id, strand=strand,
+                                    start=start, end=end, sp_id=sp_id)
+        self.sub_features = sub_features
+        self.qualifiers = qualifiers
+
+    def sgf_len(self):
+        self.sgf_len_dir = {i: 0 for i in list(
+            set([sgf.type for sgf in self.sub_features]))}
+
+        for sgf in self.sub_features:
+            sgf_len = abs(sgf.start - sgf.end) + 1
+            self.sgf_len_dir[sgf.type] += sgf_len
+
+    def get_bottom_subfeatures(self):
+        bgf_list = []
+        if sgf is None or len(self.sub_features) == 0:
+            bgf_list.append(sgf)
+            return bgf_list
+        else:
+            for sgf in sgf.sub_features:
+                bgf_list.extend(self.get_bottom_subfeatures(sgf))
+        return bgf_list
+
+    def __eq__(self, other):
+        return self.id == other.id and self.chr_loci == other.chr_loci and self.type == other.type
+
+    def __hash__(self):
+        return hash(id(self))
+
+
+def ft2cl(feature_location, chr_id):
+    """
+    create ChrLoci by FeatureLocation from BCBio
+    """
+    return ChrLoci(chr_id=chr_id, strand=feature_location.strand, start=feature_location.start + 1,
+                   end=feature_location.end)
+
+
+def sf2gf(sf, chr_id):
+    """
+    create GenomeFeature by SeqFeature from BCBio
+    """
+    sf_cl = ft2cl(sf.location, chr_id)
+    gf = GenomeFeature(id=sf.id, type=sf.type, chr_loci=sf_cl)
+    gf.qualifiers = sf.qualifiers
+
+    # parse sub_feature
+    if hasattr(sf, 'sub_features') and len(sf.sub_features) != 0:
+        gf.sub_features = []
+        for sub_sf in sf.sub_features:
+            gf.sub_features.append(sf2gf(sub_sf, chr_id))
+
+    return gf
+
+
+def read_gff_file(gff_file):
+    feature_dict = OrderedDict()
+
+    no_id = 0
+    with open(gff_file, 'r') as in_handle:
+        for rec in GFF.parse(in_handle):
+            for feature in rec.features:
+                new_feature = sf2gf(feature, rec.id)
+                if new_feature.type not in feature_dict:
+                    feature_dict[new_feature.type] = OrderedDict()
+                if new_feature.id == '':
+                    new_feature.id = 'NoID_%d' % no_id
+                    no_id += 1
+                feature_dict[new_feature.type][new_feature.id] = new_feature
+
+    return feature_dict
 
 
 def section(inter_a, inter_b, int_flag=False, just_judgement=False):
@@ -310,7 +492,7 @@ def get_range_haplotype(chr_id, start, end, bam_file, genome_file, output_ref_fi
         return output_assem_h1_file, output_assem_h2_file
 
 
-def get_range_assembly(chr_id, start, end, bam_file, genome_file, output_ref_file, output_assem_file, work_dir, debug=False, return_ref=False):
+def get_range_assembly(chr_id, start, end, bam_file, genome_file, work_dir=None, debug=False):
     """
     Get the assembly sequences of a specific region.
     Parameters:
@@ -321,58 +503,58 @@ def get_range_assembly(chr_id, start, end, bam_file, genome_file, output_ref_fil
     - genome_file: Path to the reference genome file
     - work_dir: Path to the working directory
     """
+    mkdir(work_dir)
+    output_ref_file = f"{work_dir}/range.ref.fa"
+    output_assem_file = f"{work_dir}/range.assem.fa"
+    tmp_dir = f"{work_dir}/tmp_range_assem"
+    mkdir(tmp_dir, keep=False)
+
     if os.path.exists(output_ref_file) and os.path.getsize(output_ref_file) > 0 and os.path.exists(output_assem_file) and os.path.getsize(output_assem_file) > 0:
         print(
             f"Output files already exist: {output_assem_file}, skipping reassembly.")
-        if return_ref:
-            return output_ref_file, output_assem_file
-        else:
-            return output_assem_file
-
-    mkdir(work_dir)
 
     # 1. 提取高质量成对 reads（MQ ≥ 30，proper pair），输出为两个 fastq
     cmd_string = f"samtools view -u -f 3 -q 30 {bam_file} {chr_id}:{start}-{end} | samtools collate -Ou - | samtools fastq -1 read_1.fq -2 read_2.fq -0 /dev/null -s /dev/null -n - > /dev/null"
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
 
     # 2. 提取该区域的参考序列（用于 trusted contig）
     cmd_string = f"samtools faidx {genome_file} {chr_id}:{start}-{end} > {output_ref_file}"
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
 
     # 1.1 如果没有成对 reads，则直接返回
-    if not os.path.exists(f"{work_dir}/read_1.fq") or not os.path.exists(f"{work_dir}/read_2.fq"):
-        cmd_run(f"touch {output_assem_file}", cwd=work_dir)
+    if not os.path.exists(f"{tmp_dir}/read_1.fq") or not os.path.exists(f"{tmp_dir}/read_2.fq"):
+        cmd_run(f"touch {output_assem_file}", cwd=tmp_dir)
         if debug is False:
             rmdir(work_dir)
         return output_ref_file, output_assem_file
 
-    if os.path.getsize(f"{work_dir}/read_1.fq") == 0 or os.path.getsize(f"{work_dir}/read_2.fq") == 0:
-        cmd_run(f"touch {output_assem_file}", cwd=work_dir)
+    if os.path.getsize(f"{tmp_dir}/read_1.fq") == 0 or os.path.getsize(f"{tmp_dir}/read_2.fq") == 0:
+        cmd_run(f"touch {output_assem_file}", cwd=tmp_dir)
         if debug is False:
             rmdir(work_dir)
         return output_ref_file, output_assem_file
 
     # 3. 使用 SPAdes 进行引导式拼接（输入左右端 reads）
-    cmd_string = "spades.py -1 read_1.fq -2 read_2.fq -o range_spades_out"
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_string = "spades.py -t 1 -m 5 -1 read_1.fq -2 read_2.fq -o range_spades_out"
+    cmd_run(cmd_string, cwd=tmp_dir)
 
     # cmd_string = "spades.py --only-assembler -1 read_1.fq -2 read_2.fq --trusted-contigs range.ref.fa -o range_spades_out"
     # cmd_run(cmd_string, cwd=work_dir)
 
     # 4. 将 reads 回帖到 SPAdes 拼出来的 contig 上
     cmd_string = "bwa index range_spades_out/contigs.fasta"
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
     cmd_string = "bwa mem range_spades_out/contigs.fasta read_1.fq read_2.fq | samtools sort -o aln.bam"
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
     cmd_string = "samtools index aln.bam"
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
 
     # 5. 使用 Pilon 进行拼接纠错
     cmd_string = "pilon --genome range_spades_out/contigs.fasta --frags aln.bam --output polished --outdir polished_dir --vcf"
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
 
     # 6. 将纠错后的 contig 提取出来
-    polished_fasta = f"{work_dir}/polished_dir/polished.fasta"
+    polished_fasta = f"{tmp_dir}/polished_dir/polished.fasta"
     polished_seq_dict = read_fasta(polished_fasta)
 
     with open(output_assem_file, 'w') as out_f:
@@ -383,12 +565,7 @@ def get_range_assembly(chr_id, start, end, bam_file, genome_file, output_ref_fil
             num += 1
 
     if debug is False:
-        rmdir(work_dir)
-
-    if return_ref:
-        return output_ref_file, output_assem_file
-    else:
-        return output_assem_file
+        rmdir(tmp_dir)
 
 
 def get_range_annotation(local_assem_fasta, ref_pt_fasta, ref_cDNA_fasta, results_json_file, work_dir, debug=False):
@@ -400,11 +577,6 @@ def get_range_annotation(local_assem_fasta, ref_pt_fasta, ref_cDNA_fasta, result
     - ref_cDNA_fasta: Path to the reference cDNA FASTA file
     - work_dir: Path to the working directory
     """
-    if os.path.exists(results_json_file) and os.path.getsize(results_json_file) > 0:
-        print(
-            f"Results already exist: {results_json_file}, skipping reannotation.")
-        return results_json_file
-
     mkdir(work_dir)
 
     cmd_string = f"exonerate --model protein2genome --showtargetgff yes --showquerygff no --showalignment no --minintron 20 --percent 30 --bestn 1 --maxintron 20000 {ref_pt_fasta} {local_assem_fasta} > exonerate.gff"
@@ -587,10 +759,198 @@ def get_range_annotation(local_assem_fasta, ref_pt_fasta, ref_cDNA_fasta, result
         if chrom not in results_dict:
             results_dict[chrom] = {"seq": contigs_seq_dict[chrom], "mRNAs": {}}
 
-    if debug is False:
-        rmdir(work_dir)
-
     with open(results_json_file, 'w') as f:
         json.dump(results_dict, f, indent=4)
 
+    if debug is False:
+        rmdir(work_dir)
+
     return results_json_file
+
+
+def get_cds_length(mRNA):
+    cds_length = 0
+    for cds in mRNA.sub_features:
+        if cds.type == 'CDS':
+            cds_length += abs(cds.start - cds.end) + 1
+    return cds_length
+
+
+def get_model_mRNA(gene):
+    mRNA_id_list = [i for i in gene.sub_features if i.type == 'mRNA']
+    model_mRNA = sorted(
+        mRNA_id_list, key=lambda x: get_cds_length(x), reverse=True)[0]
+    return model_mRNA
+
+
+# local reassembly for genic region
+def build_gene_db(genome_file, gene_gff_file, db_path, gene_flank=2000, intron_flank=500):
+    mkdir(db_path)
+
+    gene_dict = read_gff_file(gene_gff_file)['gene']
+    contigs_seq_dict = read_fasta(genome_file)
+
+    for g_id in gene_dict:
+        gene_dir = os.path.join(db_path, g_id)
+        mkdir(gene_dir)
+
+        g = gene_dict[g_id]
+        m = get_model_mRNA(g)
+        exon_list = []
+        for exon in m.sub_features:
+            if exon.type == 'exon':
+                exon_list.append((exon.start, exon.end))
+        start_exon = sorted(exon_list, key=lambda x: x[0])[0]
+        end_exon = sorted(exon_list, key=lambda x: x[1], reverse=True)[0]
+
+        # get range list
+        range_list = []
+        if start_exon == end_exon:
+            range_list.append(
+                (start_exon[0] - gene_flank, end_exon[1] + gene_flank))
+        else:
+            range_list.append(
+                (start_exon[0] - gene_flank, start_exon[1] + intron_flank))
+            range_list.append(
+                (end_exon[0] - intron_flank, end_exon[1] + gene_flank))
+            for i in exon_list:
+                if i == start_exon or i == end_exon:
+                    continue
+                range_list.append((i[0] - intron_flank, i[1] + intron_flank))
+
+        range_list = sorted(range_list, key=lambda x: x[0])
+        range_list = merge_intervals(range_list, int=True)
+        range_list = [(max(0, r[0]), r[1])
+                      for r in range_list]  # Ensure no negative start positions
+
+        range_dict = {
+            'gene_id': g_id,
+            'chr_id': g.chr_id,
+            'strand': m.strand,
+            'range_list': range_list,
+            'exon_list': exon_list,
+        }
+
+        with open(os.path.join(gene_dir, f"{g_id}.range.json"), 'w') as f:
+            json.dump(range_dict, f, indent=4)
+
+        # extract gene seq
+        gene_seq = contigs_seq_dict[g.chr_id][
+            g.start - gene_flank - 1:g.end + gene_flank]
+        if m.strand == '-':
+            gene_seq = gene_seq[::-1].translate(str.maketrans('ATCG', 'TAGC'))
+        with open(os.path.join(gene_dir, f"{g_id}.gene.fa"), 'w') as f:
+            f.write(f">{g_id}\n{gene_seq}\n")
+
+        # extract exon seq
+        exon_seq = ''
+        for exon_start, exon_end in exon_list:
+            exon_seq += contigs_seq_dict[g.chr_id][exon_start - 1:exon_end]
+        if m.strand == '-':
+            exon_seq = exon_seq[::-1].translate(str.maketrans('ATCG', 'TAGC'))
+
+        exon_seq_file = os.path.join(gene_dir, f"{g_id}.exon.fa")
+        with open(exon_seq_file, 'w') as f:
+            f.write(f">{g_id}\n{exon_seq}\n")
+
+        # extract aa seq
+        cds_seq = ''
+        for cds in m.sub_features:
+            if cds.type == 'CDS':
+                cds_seq += contigs_seq_dict[g.chr_id][cds.start - 1:cds.end]
+        if m.strand == '-':
+            cds_seq = cds_seq[::-1].translate(str.maketrans('ATCG', 'TAGC'))
+        aa_seq = cds_judgment(cds_seq, parse_phase=False,
+                              keep_stop=True, return_cds=False)[2]
+
+        with open(os.path.join(gene_dir, f"{g_id}.aa.fa"), 'w') as f:
+            f.write(f">{g_id}\n{aa_seq}\n")
+
+        with open(os.path.join(gene_dir, f"{g_id}.cds.fa"), 'w') as f:
+            f.write(f">{g_id}\n{cds_seq}\n")
+
+
+def gene_pipeline(gene_id, genome_file, gene_db_path, bam_file, work_dir=None, debug=False):
+    mkdir(work_dir)
+    tmp_dir = os.path.join(work_dir, 'tmp_gene_pipeline')
+    mkdir(tmp_dir, keep=False)
+
+    assem_dir = os.path.join(tmp_dir, 'assem')
+    mkdir(assem_dir)
+    range_dict = json.load(
+        open(os.path.join(gene_db_path, gene_id, f"{gene_id}.range.json"), 'r'))
+
+    chr_id = range_dict['chr_id']
+    strand = range_dict['strand']
+    range_list = range_dict['range_list']
+    # Sort by start position
+    range_list = sorted(range_list, key=lambda x: x[0])
+    range_dict = {f"range_{i}": (start, end)
+                  for i, (start, end) in enumerate(range_list)}
+
+    for range_key, (start, end) in range_dict.items():
+        get_range_assembly(chr_id, start, end, bam_file, genome_file,
+                           work_dir=f"{assem_dir}/{range_key}", debug=debug)
+
+    # Combine all assembly results
+    exon_assem_fasta = os.path.join(assem_dir, 'range.exon.assem.fa')
+    num = 0
+    with open(exon_assem_fasta, 'w') as out_f:
+        for range_key in sorted(range_dict.keys(), key=lambda x: range_dict[x][0]):
+            range_assem_file = os.path.join(
+                assem_dir, range_key, 'range.assem.fa')
+            range_assem_seq_dict = read_fasta(range_assem_file)
+            for seq_id, seq in range_assem_seq_dict.items():
+                new_seq_id = f"contig_{num}"
+                out_f.write(f">{new_seq_id}\n{seq}\n")
+                num += 1
+
+    # blastn to ref gene seq
+    ref_gene_seq_file = os.path.join(
+        gene_db_path, gene_id, f"{gene_id}.gene.fa")
+    cmd_run(f"cp {ref_gene_seq_file} {assem_dir}/ref.gene.fa", cwd=assem_dir)
+    cmd_string = f"blastn -query {exon_assem_fasta} -subject ref.gene.fa -outfmt 6 -max_hsps 1 -max_target_seqs 1 -evalue 1e-5 > exon.blastn.out"
+    cmd_run(cmd_string, cwd=assem_dir)
+
+    blast_result_file = os.path.join(assem_dir, 'exon.blastn.out')
+    blast_results = {}
+    with open(blast_result_file, 'r') as f:
+        for line in f:
+            fields = line.strip().split('\t')
+            query_id = fields[0]
+            sstart = int(fields[8])
+            send = int(fields[9])
+            strand = '+' if sstart < send else '-'
+            if strand == '-':
+                sstart, send = send, sstart
+            blast_results[query_id] = (sstart, send, strand)
+
+    exon_assem_dict = read_fasta(exon_assem_fasta)
+    stitch_seq = ''
+    assem_id_list = blast_results.keys()
+    assem_id_list = sorted(assem_id_list, key=lambda x: blast_results[x][0])
+    for assem_id in assem_id_list:
+        sstart, send, strand = blast_results[assem_id]
+        seq = exon_assem_dict[assem_id]
+        if strand == '-':
+            seq = seq[::-1].translate(str.maketrans('ATCG', 'TAGC'))
+        stitch_seq += seq
+
+    stitch_fasta = os.path.join(assem_dir, 'stitch.exon.assem.fa')
+    with open(stitch_fasta, 'w') as f:
+        f.write(f">stitch_exon_assem\n{stitch_seq}\n")
+
+    # run annotation
+    ref_pt_fasta = os.path.join(gene_db_path, gene_id, f"{gene_id}.aa.fa")
+    ref_cDNA_fasta = os.path.join(gene_db_path, gene_id, f"{gene_id}.exon.fa")
+    anno_dir = os.path.join(tmp_dir, 'anno')
+    mkdir(anno_dir)
+    results_json_file = os.path.join(anno_dir, f"anno.json")
+    get_range_annotation(stitch_fasta, ref_pt_fasta, ref_cDNA_fasta,
+                         results_json_file, anno_dir+"/tmp", debug=debug)
+
+    cmd_run(f"cp {results_json_file} {work_dir}/", cwd=anno_dir)
+    cmd_run(f"cp {stitch_fasta} {work_dir}/", cwd=anno_dir)
+
+    if debug is False:
+        rmdir(tmp_dir)

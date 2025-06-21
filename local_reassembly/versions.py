@@ -4,6 +4,12 @@ def get_versions():
 
 versions = [
     {
+        "number": "0.0.3",
+        "features": [
+            "1. add genic reassembly function",
+        ],
+    },
+    {
         "number": "0.0.2",
         "features": [
             "1. add get_range_assembly function",

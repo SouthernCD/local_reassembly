@@ -22,7 +22,10 @@ setuptools.setup(
 
     packages=setuptools.find_packages(),
 
-    install_requires=[],
+    install_requires=[
+        "biopython==1.80",
+        "bcbio-gff==0.7.1",
+    ],
 
     python_requires='>=3.5',
 )
