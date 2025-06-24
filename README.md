@@ -17,7 +17,7 @@ We also recommend installing with Docker, please see Dockerfile for more informa
 - Assembly
 
 ```bash
-usage: reloc reassm [-h] [-o OUTPUT_PREFIX] [-t TMP_WORK_DIR] [-d] [-m {assembly,haplotype}] input_genome_file input_bam_file region
+usage: reloc reassm [-h] [-o OUTPUT_DIR] [-d] [-m {assembly,haplotype}] [-p] [-a {spades,megahit}] input_genome_file input_bam_file region
 
 Local reassembly
 
@@ -28,13 +28,14 @@ positional arguments:
 
 optional arguments:
   -h, --help            show this help message and exit
-  -o OUTPUT_PREFIX, --output_prefix OUTPUT_PREFIX
-                        output prefix for the reassembly files
-  -t TMP_WORK_DIR, --tmp_work_dir TMP_WORK_DIR
-                        temporary working directory, default is current directory
+  -o OUTPUT_DIR, --output_dir OUTPUT_DIR
+                        output directory for the reassembly files
   -d, --debug           debug mode, default False
   -m {assembly,haplotype}, --mode {assembly,haplotype}
                         mode of operation: "assembly" for local assembly, "haplotype" for haplotype reconstruction
+  -p, --polish          whether to polish the assembly with Pilon, default False
+  -a {spades,megahit}, --assembler {spades,megahit}
+                        assembler to use, default is megahit
 ```
 
 - Annotation
@@ -83,7 +84,7 @@ optional arguments:
  run local reassembly and reannotation for a gene
 
 ```bash
-usage: reloc genepipe [-h] [-w WORK_DIR] [-d] gene_id genome_file gene_db_path bam_file
+usage: reloc genepipe [-h] [-w WORK_DIR] [-d] [-m ASSEMBLY_MODE] [-a {spades,megahit}] [-p] gene_id genome_file gene_db_path bam_file
 
 Gene pipeline
 
@@ -98,5 +99,9 @@ optional arguments:
   -w WORK_DIR, --work_dir WORK_DIR
                         working directory, default is current directory
   -d, --debug           debug mode, default False
+  -m ASSEMBLY_MODE, --assembly_mode ASSEMBLY_MODE
+                        assembly mode, default is assembly
+  -a {spades,megahit}, --assembler {spades,megahit}
+                        assembler to use, default is megahit
+  -p, --polish          whether to polish the assembly with Pilon, default False
 ```
-

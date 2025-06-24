@@ -380,6 +380,20 @@ def get_mRNA_ranges(minimap_paf):
     return mRNA_ranges
 
 
+def get_exonerate_gene_range(exonerate_gff):
+    gene_range = []
+    with open(exonerate_gff, 'r') as f:
+        for line in f:
+            fields = line.strip().split()
+            if len(fields) > 4 and fields[2] == 'gene':
+                chrom = fields[0]
+                start = int(fields[3])
+                end = int(fields[4])
+                strand = fields[6]
+                gene_range.append((chrom, start-21, end+21, strand))
+    return gene_range
+
+
 def get_intron_ranges(exonerate_gff):
     """
     Get the intron ranges from an Exonerate GFF file.
@@ -423,7 +437,7 @@ def get_exon_range_from_mRNA_and_intron_ranges(mRNA_ranges, intron_ranges):
     return mRNA_dict
 
 
-def get_range_haplotype(chr_id, start, end, bam_file, genome_file, output_ref_file, output_assem_h1_file, output_assem_h2_file, work_dir, debug=False, return_ref=False):
+def get_range_haplotype(chr_id, start, end, bam_file, genome_file, output_dir, debug=False):
     """
     Get the haplotype sequences of a specific region.
     Parameters:
@@ -434,65 +448,64 @@ def get_range_haplotype(chr_id, start, end, bam_file, genome_file, output_ref_fi
     - genome_file: Path to the reference genome file
     - work_dir: Path to the working directory
     """
+    mkdir(output_dir)
+    output_assem_h1_file = f"{output_dir}/range_hap1.fasta"
+    output_assem_h2_file = f"{output_dir}/range_hap2.fasta"
+    output_ref_file = f"{output_dir}/range.ref.fa"
 
     if os.path.exists(output_assem_h1_file) and os.path.getsize(output_assem_h1_file) > 0:
         print(
             f"Output files already exist: {output_assem_h1_file}, {output_assem_h2_file}, skipping reassembly.")
-        if return_ref:
-            return output_ref_file, output_assem_h1_file, output_assem_h2_file
-        else:
-            return output_assem_h1_file, output_assem_h2_file
+        return output_ref_file, output_assem_h1_file, output_assem_h2_file
 
-    mkdir(work_dir)
+    tmp_dir = f"{output_dir}/tmp_range_haplotype"
+    mkdir(tmp_dir)
 
     cmd_string = "samtools view -bS %s %s:%d-%d > range.bam" % (
         bam_file, chr_id, start, end)
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
 
     cmd_string = "samtools index range.bam"
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
 
     cmd_string = "freebayes -f %s range.bam > range_variants.vcf" % (
         genome_file)
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
 
     cmd_string = "whatshap phase -o range_phased.vcf --reference=%s range_variants.vcf range.bam" % (
         genome_file)
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
 
     cmd_string = "bgzip range_phased.vcf && tabix range_phased.vcf.gz"
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
 
     cmd_string = "samtools faidx %s %s:%d-%d > range.ref.fa" % (
         genome_file, chr_id, start, end)
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
 
     cmd_string = "bcftools consensus -H 1 -f range.ref.fa range_phased.vcf.gz > range_hap1.fasta" % (
     )
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
 
     cmd_string = "bcftools consensus -H 2 -f range.ref.fa range_phased.vcf.gz > range_hap2.fasta" % (
     )
-    cmd_run(cmd_string, cwd=work_dir)
+    cmd_run(cmd_string, cwd=tmp_dir)
 
-    hap1_file = "%s/range_hap1.fasta" % (work_dir)
-    hap2_file = "%s/range_hap2.fasta" % (work_dir)
-    ref_file = "%s/range.ref.fa" % (work_dir)
+    hap1_file = "%s/range_hap1.fasta" % (tmp_dir)
+    hap2_file = "%s/range_hap2.fasta" % (tmp_dir)
+    ref_file = "%s/range.ref.fa" % (tmp_dir)
 
-    cmd_run(f"mv {hap1_file} {output_assem_h1_file}", cwd=work_dir)
-    cmd_run(f"mv {hap2_file} {output_assem_h2_file}", cwd=work_dir)
-    cmd_run(f"mv {ref_file} {output_ref_file}", cwd=work_dir)
+    cmd_run(f"mv {hap1_file} {output_assem_h1_file}", cwd=tmp_dir)
+    cmd_run(f"mv {hap2_file} {output_assem_h2_file}", cwd=tmp_dir)
+    cmd_run(f"mv {ref_file} {output_ref_file}", cwd=tmp_dir)
 
     if debug is False:
-        rmdir(work_dir)
+        rmdir(tmp_dir)
 
-    if return_ref:
-        return output_ref_file, output_assem_h1_file, output_assem_h2_file
-    else:
-        return output_assem_h1_file, output_assem_h2_file
+    return output_ref_file, output_assem_h1_file, output_assem_h2_file
 
 
-def get_range_assembly(chr_id, start, end, bam_file, genome_file, work_dir=None, debug=False):
+def get_range_assembly(chr_id, start, end, bam_file, genome_file, output_dir=None, debug=False, assembly_tool='spades', polish=True):
     """
     Get the assembly sequences of a specific region.
     Parameters:
@@ -503,10 +516,10 @@ def get_range_assembly(chr_id, start, end, bam_file, genome_file, work_dir=None,
     - genome_file: Path to the reference genome file
     - work_dir: Path to the working directory
     """
-    mkdir(work_dir)
-    output_ref_file = f"{work_dir}/range.ref.fa"
-    output_assem_file = f"{work_dir}/range.assem.fa"
-    tmp_dir = f"{work_dir}/tmp_range_assem"
+    mkdir(output_dir)
+    output_ref_file = f"{output_dir}/range.ref.fa"
+    output_assem_file = f"{output_dir}/range.assem.fa"
+    tmp_dir = f"{output_dir}/tmp_range_assem"
     mkdir(tmp_dir, keep=False)
 
     if os.path.exists(output_ref_file) and os.path.getsize(output_ref_file) > 0 and os.path.exists(output_assem_file) and os.path.getsize(output_assem_file) > 0:
@@ -525,50 +538,62 @@ def get_range_assembly(chr_id, start, end, bam_file, genome_file, work_dir=None,
     if not os.path.exists(f"{tmp_dir}/read_1.fq") or not os.path.exists(f"{tmp_dir}/read_2.fq"):
         cmd_run(f"touch {output_assem_file}", cwd=tmp_dir)
         if debug is False:
-            rmdir(work_dir)
+            rmdir(tmp_dir)
         return output_ref_file, output_assem_file
 
     if os.path.getsize(f"{tmp_dir}/read_1.fq") == 0 or os.path.getsize(f"{tmp_dir}/read_2.fq") == 0:
         cmd_run(f"touch {output_assem_file}", cwd=tmp_dir)
         if debug is False:
-            rmdir(work_dir)
+            rmdir(tmp_dir)
         return output_ref_file, output_assem_file
 
-    # 3. 使用 SPAdes 进行引导式拼接（输入左右端 reads）
-    cmd_string = "spades.py -t 1 -m 5 -1 read_1.fq -2 read_2.fq -o range_spades_out"
-    cmd_run(cmd_string, cwd=tmp_dir)
+    try:
+        if assembly_tool == 'spades':
+            # 3. 使用 SPAdes 进行引导式拼接（输入左右端 reads）
+            cmd_string = "spades.py -t 1 -m 5 -1 read_1.fq -2 read_2.fq -o range_spades_out"
+            cmd_run(cmd_string, cwd=tmp_dir)
+            # cmd_string = "spades.py --only-assembler -1 read_1.fq -2 read_2.fq --trusted-contigs range.ref.fa -o range_spades_out"
+            # cmd_run(cmd_string, cwd=work_dir)
+            assem_outfasta = f"{tmp_dir}/range_spades_out/contigs.fasta"
+        elif assembly_tool == 'megahit':
+            cmd_string = "megahit -t 1 -m 5e+9 -1 read_1.fq -2 read_2.fq -o range_megahit_out"
+            cmd_run(cmd_string, cwd=tmp_dir)
+            assem_outfasta = f"{tmp_dir}/range_megahit_out/final.contigs.fa"
 
-    # cmd_string = "spades.py --only-assembler -1 read_1.fq -2 read_2.fq --trusted-contigs range.ref.fa -o range_spades_out"
-    # cmd_run(cmd_string, cwd=work_dir)
+        if polish:
+            # 4. 将 reads 回帖到 SPAdes 拼出来的 contig 上
+            cmd_string = f"bwa index {assem_outfasta}"
+            cmd_run(cmd_string, cwd=tmp_dir)
+            cmd_string = f"bwa mem {assem_outfasta} read_1.fq read_2.fq | samtools sort -o aln.bam"
+            cmd_run(cmd_string, cwd=tmp_dir)
+            cmd_string = "samtools index aln.bam"
+            cmd_run(cmd_string, cwd=tmp_dir)
 
-    # 4. 将 reads 回帖到 SPAdes 拼出来的 contig 上
-    cmd_string = "bwa index range_spades_out/contigs.fasta"
-    cmd_run(cmd_string, cwd=tmp_dir)
-    cmd_string = "bwa mem range_spades_out/contigs.fasta read_1.fq read_2.fq | samtools sort -o aln.bam"
-    cmd_run(cmd_string, cwd=tmp_dir)
-    cmd_string = "samtools index aln.bam"
-    cmd_run(cmd_string, cwd=tmp_dir)
+            # 5. 使用 Pilon 进行拼接纠错
+            cmd_string = f"pilon --genome {assem_outfasta} --frags aln.bam --output polished --outdir polished_dir --vcf"
+            cmd_run(cmd_string, cwd=tmp_dir)
+            assem_outfasta = f"{tmp_dir}/polished_dir/polished.fasta"
 
-    # 5. 使用 Pilon 进行拼接纠错
-    cmd_string = "pilon --genome range_spades_out/contigs.fasta --frags aln.bam --output polished --outdir polished_dir --vcf"
-    cmd_run(cmd_string, cwd=tmp_dir)
+    except:
+        assem_outfasta = f"{tmp_dir}/non_exist.fasta"
 
-    # 6. 将纠错后的 contig 提取出来
-    polished_fasta = f"{tmp_dir}/polished_dir/polished.fasta"
-    polished_seq_dict = read_fasta(polished_fasta)
+    if not os.path.exists(assem_outfasta) or os.path.getsize(assem_outfasta) == 0:
+        cmd_run(f"touch {output_assem_file}", cwd=tmp_dir)
+    else:
+        seq_dict = read_fasta(assem_outfasta)
 
-    with open(output_assem_file, 'w') as out_f:
-        num = 0
-        for seq_id in sorted(polished_seq_dict.keys(), key=lambda x: len(polished_seq_dict[x]), reverse=True):
-            new_seq_id = f"contig_{num}"
-            out_f.write(f">{new_seq_id}\n{polished_seq_dict[seq_id]}\n")
-            num += 1
+        with open(output_assem_file, 'w') as out_f:
+            num = 0
+            for seq_id in sorted(seq_dict.keys(), key=lambda x: len(seq_dict[x]), reverse=True):
+                new_seq_id = f"contig_{num}"
+                out_f.write(f">{new_seq_id}\n{seq_dict[seq_id]}\n")
+                num += 1
 
     if debug is False:
         rmdir(tmp_dir)
 
 
-def get_range_annotation(local_assem_fasta, ref_pt_fasta, ref_cDNA_fasta, results_json_file, work_dir, debug=False):
+def get_range_annotation(local_assem_fasta, ref_pt_fasta, ref_cDNA_fasta, results_json_file, work_dir, debug=False, blast_tool='blast'):
     """
     Get the annotation of a specific region.
     Parameters:
@@ -594,6 +619,8 @@ def get_range_annotation(local_assem_fasta, ref_pt_fasta, ref_cDNA_fasta, result
 
     mRNA_ranges = get_mRNA_ranges(minimap_paf)
     intron_ranges = get_intron_ranges(exonerate_gff)
+    exonerate_gene_range = get_exonerate_gene_range(exonerate_gff)
+    mRNA_ranges = mRNA_ranges + exonerate_gene_range
     mRNA_dict = get_exon_range_from_mRNA_and_intron_ranges(
         mRNA_ranges, intron_ranges)
 
@@ -616,15 +643,23 @@ def get_range_annotation(local_assem_fasta, ref_pt_fasta, ref_cDNA_fasta, result
         with open(exon_seq_file, 'w') as f:
             f.write(f">{mRNA_id}\n{exon_seq}\n")
 
-        cmd_string = f"TransDecoder.LongOrfs -t {exon_seq_file}"
+        cmd_string = f"TransDecoder.LongOrfs -S -m 10 -t {exon_seq_file}"
         cmd_run(cmd_string, cwd=tmp_dir)
 
-        diamond_bls_file = f"{tmp_dir}/{mRNA_id}.blastp.out"
-        cmd_string = f"diamond blastp --query {exon_seq_file}.transdecoder_dir/longest_orfs.pep --db {ref_pt_fasta} --outfmt 6 --max-target-seqs 1 --evalue 1e-5 > {diamond_bls_file}"
-        cmd_run(cmd_string, cwd=tmp_dir)
+        if blast_tool == 'diamond':
+            bls_file = f"{tmp_dir}/{mRNA_id}.diamond.blastp.out"
+            cmd_string = f"diamond blastp --query {exon_seq_file}.transdecoder_dir/longest_orfs.pep --db {ref_pt_fasta} --outfmt 6 --max-target-seqs 1 --evalue 1e-5 > {bls_file}"
+            cmd_run(cmd_string, cwd=tmp_dir)
+        elif blast_tool == 'blast':
+            bls_file = f"{tmp_dir}/{mRNA_id}.blastp.out"
+            if not os.path.exists(f'{ref_pt_fasta}.pdb'):
+                cmd_string = f"makeblastdb -in {ref_pt_fasta} -dbtype prot"
+                cmd_run(cmd_string, cwd=tmp_dir)
+            cmd_string = f"blastp -query {exon_seq_file}.transdecoder_dir/longest_orfs.pep -db {ref_pt_fasta} -outfmt 6 -max_target_seqs 1 -evalue 1e-5 > {bls_file}"
+            cmd_run(cmd_string, cwd=tmp_dir)
 
         hits = {}
-        with open(diamond_bls_file, 'r') as blastp_file:
+        with open(bls_file, 'r') as blastp_file:
             for line in blastp_file:
                 fields = line.strip().split('\t')
                 query_id = fields[0]
@@ -854,12 +889,20 @@ def build_gene_db(genome_file, gene_gff_file, db_path, gene_flank=2000, intron_f
             f.write(f">{g_id}\n{exon_seq}\n")
 
         # extract aa seq
+        cds_list = [cds for cds in m.sub_features if cds.type == 'CDS']
+        if m.strand == '+':
+            cds_list = sorted(cds_list, key=lambda x: x.start)
+        else:
+            cds_list = sorted(cds_list, key=lambda x: x.end, reverse=True)
+
         cds_seq = ''
-        for cds in m.sub_features:
-            if cds.type == 'CDS':
+        for cds in cds_list:
+            if m.strand == '+':
                 cds_seq += contigs_seq_dict[g.chr_id][cds.start - 1:cds.end]
-        if m.strand == '-':
-            cds_seq = cds_seq[::-1].translate(str.maketrans('ATCG', 'TAGC'))
+            else:
+                cds_seq += contigs_seq_dict[g.chr_id][cds.start -
+                                                      1:cds.end][::-1].translate(str.maketrans('ATCG', 'TAGC'))
+
         aa_seq = cds_judgment(cds_seq, parse_phase=False,
                               keep_stop=True, return_cds=False)[2]
 
@@ -870,8 +913,16 @@ def build_gene_db(genome_file, gene_gff_file, db_path, gene_flank=2000, intron_f
             f.write(f">{g_id}\n{cds_seq}\n")
 
 
-def gene_pipeline(gene_id, genome_file, gene_db_path, bam_file, work_dir=None, debug=False):
+def gene_pipeline(gene_id, genome_file, gene_db_path, bam_file, work_dir=None, debug=False, assembly_mode='assembly', assembly_tool='spades', polish=True):
     mkdir(work_dir)
+
+    final_results_json_file = os.path.join(work_dir, f"anno.json")
+    final_stitch_fasta = os.path.join(work_dir, f"stitch.exon.assem.fa")
+    if os.path.exists(final_results_json_file) and os.path.getsize(final_results_json_file) > 0 and os.path.exists(final_stitch_fasta) and os.path.getsize(final_stitch_fasta) > 0:
+        print(
+            f"Output files already exist: {final_results_json_file}, {final_stitch_fasta}, skipping reassembly.")
+        return final_results_json_file, final_stitch_fasta
+
     tmp_dir = os.path.join(work_dir, 'tmp_gene_pipeline')
     mkdir(tmp_dir, keep=False)
 
@@ -889,8 +940,10 @@ def gene_pipeline(gene_id, genome_file, gene_db_path, bam_file, work_dir=None, d
                   for i, (start, end) in enumerate(range_list)}
 
     for range_key, (start, end) in range_dict.items():
-        get_range_assembly(chr_id, start, end, bam_file, genome_file,
-                           work_dir=f"{assem_dir}/{range_key}", debug=debug)
+        if assembly_mode == 'assembly':
+            get_range_assembly(chr_id, start, end, bam_file, genome_file,
+                               output_dir=f"{assem_dir}/{range_key}", debug=debug, assembly_tool=assembly_tool, polish=polish)
+            assem_file_name = 'range.assem.fa'
 
     # Combine all assembly results
     exon_assem_fasta = os.path.join(assem_dir, 'range.exon.assem.fa')
@@ -898,7 +951,7 @@ def gene_pipeline(gene_id, genome_file, gene_db_path, bam_file, work_dir=None, d
     with open(exon_assem_fasta, 'w') as out_f:
         for range_key in sorted(range_dict.keys(), key=lambda x: range_dict[x][0]):
             range_assem_file = os.path.join(
-                assem_dir, range_key, 'range.assem.fa')
+                assem_dir, range_key, assem_file_name)
             range_assem_seq_dict = read_fasta(range_assem_file)
             for seq_id, seq in range_assem_seq_dict.items():
                 new_seq_id = f"contig_{num}"
@@ -934,7 +987,7 @@ def gene_pipeline(gene_id, genome_file, gene_db_path, bam_file, work_dir=None, d
         seq = exon_assem_dict[assem_id]
         if strand == '-':
             seq = seq[::-1].translate(str.maketrans('ATCG', 'TAGC'))
-        stitch_seq += seq
+        stitch_seq += seq + 'N' * 100
 
     stitch_fasta = os.path.join(assem_dir, 'stitch.exon.assem.fa')
     with open(stitch_fasta, 'w') as f:

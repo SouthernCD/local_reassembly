@@ -63,17 +63,19 @@ class Job(object):
                               help='input BAM file')
         parser_a.add_argument('region', type=str,
                               help='genomic region in the format chr:start-end')
-        parser_a.add_argument('-o', '--output_prefix', type=str,
-                              help='output prefix for the reassembly files',
+        parser_a.add_argument('-o', '--output_dir', type=str,
+                              help='output directory for the reassembly files',
                               default='reassm_output')
-        parser_a.add_argument('-t', '--tmp_work_dir', type=str,
-                              help='temporary working directory, default is current directory',
-                              default=None)
         parser_a.add_argument('-d', '--debug', action='store_true',
                               help='debug mode, default False')
         parser_a.add_argument('-m', '--mode', type=str, choices=['assembly', 'haplotype'],
                               help='mode of operation: "assembly" for local assembly, "haplotype" for haplotype reconstruction',
                               default='assembly')
+        parser_a.add_argument('-p', '--polish', action='store_true',
+                              help='whether to polish the assembly with Pilon, default False')
+        parser_a.add_argument('-a', '--assembler', type=str, choices=['spades', 'megahit'],
+                              help='assembler to use, default is megahit',
+                              default='megahit')
 
         # argparse for reanno
         parser_b = subparsers.add_parser('reanno',
@@ -128,6 +130,14 @@ class Job(object):
                               default=None)
         parser_d.add_argument('-d', '--debug', action='store_true',
                               help='debug mode, default False')
+        parser_d.add_argument('-m', '--assembly_mode', type=str,
+                              help='assembly mode, default is assembly',
+                              default='assembly')
+        parser_d.add_argument('-a', '--assembler', type=str, choices=['spades', 'megahit'],
+                              help='assembler to use, default is megahit',
+                              default='megahit')
+        parser_d.add_argument('-p', '--polish', action='store_true',
+                              help='whether to polish the assembly with Pilon, default False')
 
         self.arg_parser = parser
 
@@ -149,27 +159,18 @@ class Job(object):
             bam_file = os.path.abspath(bam_file)
             genome_file = self.args.input_genome_file
             genome_file = os.path.abspath(genome_file)
-            output_prefix = self.args.output_prefix
-            work_dir = self.args.tmp_work_dir
-            if work_dir is None:
-                work_dir = f'./reassm_{uuid.uuid4().hex}'
-            work_dir = os.path.abspath(work_dir)
+            output_dir = self.args.output_dir
+            if output_dir is None:
+                output_dir = f'./reassm_{uuid.uuid4().hex}'
+            output_dir = os.path.abspath(output_dir)
             debug = self.args.debug
-
-            # Output files
-            output_ref_file = f"{output_prefix}_ref.fasta"
-            output_assem_file = f"{output_prefix}_assembly.fasta"
-            output_assem_h1_file = f"{output_prefix}_haplotype_h1.fasta"
-            output_assem_h2_file = f"{output_prefix}_haplotype_h2.fasta"
-            output_ref_file = os.path.abspath(output_ref_file)
-            output_assem_file = os.path.abspath(output_assem_file)
-            output_assem_h1_file = os.path.abspath(output_assem_h1_file)
-            output_assem_h2_file = os.path.abspath(output_assem_h2_file)
+            assembly_tool = self.args.assembler
+            polish = self.args.polish
 
             # Run the appropriate function based on mode
             if self.args.mode == 'assembly':
-                get_range_assembly(chr_id, start, end, bam_file, genome_file,
-                                   output_ref_file, output_assem_file, work_dir, debug=debug, return_ref=debug)
+                get_range_assembly(chr_id, start, end, bam_file, genome_file, output_dir=output_dir,
+                                   debug=debug, assembly_tool=assembly_tool, polish=polish)
             elif self.args.mode == 'haplotype':
                 get_range_haplotype(chr_id, start, end, bam_file, genome_file, output_ref_file,
                                     output_assem_h1_file, output_assem_h2_file, work_dir, debug=debug, return_ref=debug)
@@ -221,8 +222,11 @@ class Job(object):
                 work_dir = f'./{gene_id}'
             work_dir = os.path.abspath(work_dir)
             debug = self.args.debug
+            assembly_mode = self.args.assembly_mode
+            assembler = self.args.assembler
+            polish = self.args.polish
             gene_pipeline(gene_id, genome_file, gene_db_path,
-                          bam_file, work_dir=work_dir, debug=debug)
+                          bam_file, work_dir=work_dir, debug=debug, assembly_mode=assembly_mode, assembly_tool=assembler, polish=polish)
 
         else:
             self.arg_parser.print_help()
