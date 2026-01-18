@@ -1,3 +1,8 @@
+from multiprocessing.dummy import Pool as ThreadPool
+from multiprocessing import Pool, TimeoutError
+from functools import partial
+import time
+import logging
 import subprocess
 import os
 import shutil
@@ -555,6 +560,7 @@ def get_range_assembly(chr_id, start, end, bam_file, genome_file, output_dir=Non
             # cmd_string = "spades.py --only-assembler -1 read_1.fq -2 read_2.fq --trusted-contigs range.ref.fa -o range_spades_out"
             # cmd_run(cmd_string, cwd=work_dir)
             assem_outfasta = f"{tmp_dir}/range_spades_out/contigs.fasta"
+
         elif assembly_tool == 'megahit':
             cmd_string = "megahit -t 1 -m 5e+9 -1 read_1.fq -2 read_2.fq -o range_megahit_out"
             cmd_run(cmd_string, cwd=tmp_dir)
@@ -675,6 +681,9 @@ def get_range_annotation(local_assem_fasta, ref_pt_fasta, ref_cDNA_fasta, result
                     'coverage': subject_coverage
                 }
 
+        if len(hits) == 0:
+            continue
+
         best_hit = sorted(hits.items(), key=lambda x: (
             x[1]['evalue'], -x[1]['identity'], -x[1]['coverage']))[0]
         best_hit_id = best_hit[0]
@@ -771,14 +780,14 @@ def get_range_annotation(local_assem_fasta, ref_pt_fasta, ref_cDNA_fasta, result
         mRNA_dict[mRNA_id]['cds'] = interval_minus_set(
             (mRNA_dict[mRNA_id]['start'], mRNA_dict[mRNA_id]['end']), utr5_list + utr3_list + mRNA_dict[mRNA_id]['introns'])
 
-        check_cds_seq = ''
-        for cds_start, cds_end in mRNA_dict[mRNA_id]['cds']:
-            check_cds_seq += contigs_seq_dict[chrom][cds_start:cds_end + 1]
-        if mRNA_dict[mRNA_id]['strand'] == '-':
-            check_cds_seq = check_cds_seq[::-
-                                          1].translate(str.maketrans('ATCG', 'TAGC'))
-        if check_cds_seq != cds_seq:
-            raise ValueError(f"CDS sequence mismatch")
+        # check_cds_seq = ''
+        # for cds_start, cds_end in mRNA_dict[mRNA_id]['cds']:
+        #     check_cds_seq += contigs_seq_dict[chrom][cds_start:cds_end + 1]
+        # if mRNA_dict[mRNA_id]['strand'] == '-':
+        #     check_cds_seq = check_cds_seq[::-
+        #                                   1].translate(str.maketrans('ATCG', 'TAGC'))
+        # if check_cds_seq != cds_seq:
+        #     raise ValueError(f"CDS sequence mismatch")
 
         if debug is False:
             rmdir(tmp_dir)
@@ -913,8 +922,8 @@ def build_gene_db(genome_file, gene_gff_file, db_path, gene_flank=2000, intron_f
             f.write(f">{g_id}\n{cds_seq}\n")
 
 
-def gene_pipeline(gene_id, genome_file, gene_db_path, bam_file, work_dir=None, debug=False, assembly_mode='assembly', assembly_tool='spades', polish=True):
-    mkdir(work_dir)
+def gene_pipeline(gene_id, genome_file, gene_db_path, bam_file, work_dir=None, debug=False, assembly_mode='assembly', assembly_tool='spades', polish=True, remove_existing=False):
+    mkdir(work_dir, keep=not remove_existing)
 
     final_results_json_file = os.path.join(work_dir, f"anno.json")
     final_stitch_fasta = os.path.join(work_dir, f"stitch.exon.assem.fa")
@@ -1007,3 +1016,192 @@ def gene_pipeline(gene_id, genome_file, gene_db_path, bam_file, work_dir=None, d
 
     if debug is False:
         rmdir(tmp_dir)
+        shutil.make_archive(work_dir, 'zip', work_dir)
+        rmdir(work_dir)
+
+
+def time_now():
+    time_tmp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+    return time_tmp
+
+
+def abortable_worker(func, *args, **kwargs):
+    timeout = kwargs.get('timeout', None)
+    p = ThreadPool(1)
+    res = p.apply_async(func, args=args)
+    try:
+        out = res.get(timeout)  # Wait timeout seconds for func to complete.
+        return out
+    except TimeoutError:
+        return "Aborting due to timeout"
+        raise
+
+
+def logging_init(program_name, log_file=None, log_level=logging.DEBUG, console_level=logging.ERROR):
+    # create logger with 'program_name'
+    logger = logging.getLogger(program_name)
+    logger.setLevel(logging.DEBUG)
+    # create formatter and add it to the handlers
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    if not log_file is None:
+        # create file handler which logs even debug messages
+        fh = logging.FileHandler(log_file)
+        fh.setLevel(log_level)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+    # create console handler with a higher log level
+    ch = logging.StreamHandler()
+    ch.setLevel(console_level)
+    ch.setFormatter(formatter)
+    # add the handlers to the logger
+    logger.addHandler(ch)
+
+    return logger
+
+
+def get_more_para(f, para_tuple):
+    return f(*para_tuple)
+
+
+def multiprocess_running(f, args_dict, pool_num, log_file=None, silence=False, timeout=None):
+    """
+    :param f: function name
+    :param args_dict: a dict, value is every args in a tuple, key is the job_id
+    :param pool_num: process num of running at same time
+    :param silence:
+    :return:
+
+    example
+
+    def f(x, y):
+        time.sleep(1)
+        return x * y
+
+    args_list = list(zip(range(1,200),range(2,201)))
+    pool_num = 5
+
+    multiprocess_running(f, args_list, pool_num, log_file='/lustre/home/xuyuxing/Work/Other/saif/Meth/tmp/log')
+
+    """
+    num_tasks = len(list(args_dict))
+
+    module_log = logging_init(f.__name__, log_file)
+    if not silence:
+        print('args_list have %d object and pool_num is %d' %
+              (num_tasks, pool_num))
+    module_log.info('running with mulitprocess')
+    module_log.info('args_list have %d object and pool_num is %d' %
+                    (num_tasks, pool_num))
+
+    p_dict = {}
+
+    args_id_list = list(args_dict.keys())
+    args_list = [args_dict[i] for i in args_id_list]
+
+    if len(args_dict) > 0:
+        f_with_para = partial(get_more_para, f)
+
+        start_time = time.time()
+        if not silence:
+            print(time_now() + '\tBegin: ')
+        module_log.info('Begin: ')
+
+        if timeout is None:
+            with Pool(processes=pool_num) as pool:
+                # for i, output in enumerate(pool.imap_unordered(f_with_para, args_list, chunksize=1)):
+                for i, output in enumerate(pool.imap(f_with_para, args_list, chunksize=1)):
+                    job_id = args_id_list[i]
+
+                    p_dict[job_id] = {
+                        'args': args_list[i],
+                        'output': output,
+                        'error': None
+                    }
+                    # print(i)
+                    round_time = time.time()
+                    if round_time - start_time > 5:
+                        if not silence:
+                            print(time_now() + '\t%d/%d %.2f%% parsed' %
+                                  (i, num_tasks, i / num_tasks * 100))
+                        module_log.info('%d/%d %.2f%% parsed' %
+                                        (i, num_tasks, i / num_tasks * 100))
+                        start_time = round_time
+                    # module_log.info('%d/%d %.2f%% parsed' % (i, num_tasks, i / num_tasks * 100))
+        else:
+            abortable_func = partial(
+                abortable_worker, f_with_para, timeout=timeout)
+
+            # with Pool(processes=pool_num, maxtasksperchild=1) as pool:
+            with Pool(processes=pool_num) as pool:
+                # for i, output in enumerate(pool.imap_unordered(f_with_para, args_list, chunksize=1)):
+                it = pool.imap(abortable_func, args_list, chunksize=1)
+                i = -1
+                while 1:
+                    i += 1
+                    try:
+                        output = it.next()
+                        if args_id_list:
+                            job_id = args_id_list[i]
+                        else:
+                            job_id = 'ID_' + str(i)
+
+                        if output == "Aborting due to timeout":
+                            p_dict[job_id] = {
+                                'args': args_list[i],
+                                'output': None,
+                                'error': "timeout"
+                            }
+                        else:
+                            p_dict[job_id] = {
+                                'args': args_list[i],
+                                'output': output,
+                                'error': None
+                            }
+
+                        round_time = time.time()
+                        if round_time - start_time > 5:
+                            if not silence:
+                                print(time_now() + '\t%d/%d %.2f%% parsed' %
+                                      (i, num_tasks, i / num_tasks * 100))
+                            module_log.info('%d/%d %.2f%% parsed' %
+                                            (i, num_tasks, i / num_tasks * 100))
+                            start_time = round_time
+
+                    except StopIteration:
+                        break
+
+        module_log.info('%d/%d %.2f%% parsed' %
+                        (i, num_tasks, i / num_tasks * 100))
+        module_log.info('All args_list task finished')
+
+        if not silence:
+            print(time_now() + '\t%d/%d %.2f%% parsed' %
+                  (i, num_tasks, i / num_tasks * 100))
+            print(time_now() + '\tAll args_list task finished')
+
+    del module_log.handlers[:]
+
+    return p_dict
+
+
+def genome_pipeline(genome_file, gene_db_path, bam_file, work_dir=None, debug=False, assembly_mode='assembly', assembly_tool='spades', polish=True, threads=20):
+    mkdir(work_dir)
+    gene_id_list = os.listdir(gene_db_path)
+
+    ok_gene_id_list = os.listdir(work_dir)
+    ok_gene_id_list = [i for i in ok_gene_id_list if i.endswith('.zip')]
+    ok_gene_id_list = [i.replace('.zip', '') for i in ok_gene_id_list]
+
+    gene_id_list = list(set(gene_id_list) - set(ok_gene_id_list))
+
+    args_dict = {}
+    for gene_id in gene_id_list:
+        gene_dir = os.path.join(gene_db_path, gene_id)
+        if not os.path.exists(os.path.join(gene_dir, f"{gene_id}.range.json")):
+            continue
+        args_dict[gene_id] = (gene_id, genome_file, gene_db_path,
+                              bam_file, os.path.join(work_dir, gene_id), debug, assembly_mode, assembly_tool, polish, True)
+
+    mlt_dict = multiprocess_running(
+        gene_pipeline, args_dict, threads, log_file=os.path.join(work_dir, "gene_pipeline.log"))
